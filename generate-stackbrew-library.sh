@@ -2,7 +2,8 @@
 set -eu
 
 declare -A aliases=(
-	[8.2]='8 latest'
+	[8.3]='8 latest'
+	[8.4-rc]='rc'
 )
 
 self="$(basename "$BASH_SOURCE")"
@@ -36,6 +37,22 @@ dirCommit() {
 	)
 }
 
+getArches() {
+	local repo="$1"; shift
+	local officialImagesUrl='https://github.com/docker-library/official-images/raw/master/library/'
+
+	eval "declare -g -A parentRepoToArches=( $(
+		find -name 'Dockerfile' -exec awk '
+				toupper($1) == "FROM" && $2 !~ /^('"$repo"'|scratch|microsoft\/[^:]+)(:|$)/ {
+					print "'"$officialImagesUrl"'" $2
+				}
+			' '{}' + \
+			| sort -u \
+			| xargs bashbrew cat --format '[{{ .RepoName }}:{{ .TagName }}]="{{ join " " .TagEntry.Architectures }}"'
+	) )"
+}
+getArches 'drupal'
+
 cat <<-EOH
 # this file is generated via https://github.com/docker-library/drupal/blob/$(fileCommit "$self")/$self
 
@@ -52,15 +69,16 @@ join() {
 }
 
 for version in "${versions[@]}"; do
-	for variant in apache fpm; do
+	rcVersion="${version%-rc}"
+	for variant in apache fpm fpm-alpine; do
 		commit="$(dirCommit "$version/$variant")"
 
 		fullVersion="$(git show "$commit":"$version/$variant/Dockerfile" | awk '$1 == "ENV" && $2 == "DRUPAL_VERSION" { print $3; exit }')"
 
 		versionAliases=()
-		while [ "$fullVersion" != "$version" -a "${fullVersion%[.-]*}" != "$fullVersion" ]; do
+		while [ "$fullVersion" != "$rcVersion" -a "${fullVersion%[.]*}" != "$fullVersion" ]; do
 			versionAliases+=( $fullVersion )
-			fullVersion="${fullVersion%[.-]*}"
+			fullVersion="${fullVersion%[.]*}"
 		done
 		versionAliases+=(
 			$version
@@ -70,6 +88,9 @@ for version in "${versions[@]}"; do
 		variantAliases=( "${versionAliases[@]/%/-$variant}" )
 		variantAliases=( "${variantAliases[@]//latest-/}" )
 
+		variantParent="$(awk 'toupper($1) == "FROM" { print $2 }' "$version/$variant/Dockerfile")"
+		variantArches="${parentRepoToArches[$variantParent]}"
+
 		if [ "$variant" = 'apache' ]; then
 			variantAliases+=( "${versionAliases[@]}" )
 		fi
@@ -77,6 +98,7 @@ for version in "${versions[@]}"; do
 		echo
 		cat <<-EOE
 			Tags: $(join ', ' "${variantAliases[@]}")
+			Architectures: $(join ', ' $variantArches)
 			GitCommit: $commit
 			Directory: $version/$variant
 		EOE
